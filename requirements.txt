@@ -1,0 +1,12 @@
+langgraph
+ipykernel
+mysql-connector-python
+langchain
+dotenv
+langchain-openai
+groq
+langchain-groq
+kagglehub
+sqlalchemy
+pandas
+rapidfuzz

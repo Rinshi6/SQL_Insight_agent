@@ -1,0 +1,31 @@
+# Environments and Credentials
+.env
+.env.*
+!.env.example
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Kaggle Configurations and Data
+.kaggle/
+kaggle.json
+input/
+output/
+
+# Compressed Files
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+
+brazilian-ecommerce/
