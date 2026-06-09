@@ -6,8 +6,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableMap, RunnableLambda
 import pickle
 import re
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, TypedDict, Annotated, Literal, Optional
+from enum import StrEnum, Enum
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 
 llama = 'meta-llama/llama-4-scout-17b-16e-instruct'
@@ -103,14 +106,60 @@ User question:
 
 
 
+class TableEnum(StrEnum):
+    CUSTOMER = "customer"
+    SELLERS = "sellers"
+    ORDER_ITEMS = "order_items"
+    ORDER_PAYMENTS = "order_payments"
+    ORDER_REVIEWS = "order_reviews"
+    ORDERS = "orders"
+    PRODUCTS = "products"
+    CATEGORY_TRANSLATION = "category_translation"
+
+
+# =====================================================================
+# 2. STEP 1 STRUCTURED SCHEMAS: SUBQUESTION ROUTER
+# =====================================================================
+class SubQuestionGroup(BaseModel):
+    """Represents a target table and all the associated subquestions that map to it."""
+    subquestions: List[str] = Field(
+        description="A list of one or more distinct subquestions mapping cleanly to this single table."
+    )
+    table_name: TableEnum = Field(
+        description="The exact database table name that contains the fields to answer these subquestions."
+    )
+
+class ModelRouterOutput(BaseModel):
+    """Enforces a clean structural collection for the LLM to output safely."""
+    mappings: List[SubQuestionGroup] = Field(
+        default=[],
+        description="List of table mappings. Return an empty list if no valid subquestions can be answered."
+    )
+
+    def to_legacy_format(self) -> List[List[str]]:
+        """
+        Converts the robust structural object back to your required list-of-lists format:
+        e.g., [["subquestion1", "subquestion2", "table_name"], ...] or [[]]
+        """
+        if not self.mappings:
+            return [[]]
+        
+        result = []
+        for mapping in self.mappings:
+            # Merges all subquestions and the table name string into a single flat list
+            sublist = list(mapping.subquestions) + [mapping.table_name.value]
+            result.append(sublist)
+        return result
+    
+
+structured_model_subquestion = model_llama.with_structured_output(ModelRouterOutput)
 chain_subquestion = (
     RunnableMap({
         "tables": lambda x: x["tables"],
         "user_query": lambda x: x["user_query"]
     })
     | template_subquestion
-    | model_llama
-    | StrOutputParser()
+    | structured_model_subquestion
 )
 
 #########################################column selection######################333
@@ -185,10 +234,101 @@ chain_column_extractor = (
     | StrOutputParser()
 )
 
+class SelectedColumnDetail(BaseModel):
+    column_name: str = Field(description="The exact name of the selected database column.")
+    justification: str = Field(description="Step-by-step description of how this column contributes to solving the subquestion.")
+
+class ColumnSelectionOutput(BaseModel):
+    chosen_columns: List[SelectedColumnDetail] = Field(
+        description="A comprehensive list of selected columns needed to answer the subquestion and main query rules."
+    )
+
+structured_col_llm = model_llama.with_structured_output(ColumnSelectionOutput)
+
+chain_column_extractor = (
+    RunnableMap({
+        "columns": lambda x: x["columns"],
+        "query": lambda x: x["query"],
+        "main_question": lambda x: x["main_question"]
+    })
+    | template_column
+    | structured_col_llm
+)
 
 ############################### Decision#####################
 
 
+# template_filter_check = ChatPromptTemplate.from_messages([
+#     ("system", """
+# You are an expert assistant designed to help a text-to-SQL agent determine whether filters (i.e., WHERE clauses) are required for answering a user's natural language question using a SQL query on a database.
+
+# Your job is to:
+# 1. Carefully analyze the user question and identify if any filtering condition is implied (e.g., city = 'Campinas', date range, payment type = 'credit_card', etc.).
+# 2. Use the provided list of tables and columns (with sample values) to identify which specific string datatype **columns** would be involved in such filtering.
+     
+# 3. Determine whether a **filter is needed** ONLY for string datatype columns:
+#     - If **yes**, return a list in the format:
+#       ["yes", ["<table>", "<column>", "<filter values exactly as stated in the user question>"], ["<table2>", "<column2>", "<filter values exactly as stated in the user question>"], ...]
+#     - If **no filter is needed**, return: ["no"]
+# 4. For the third item in each filter entry, suggest value(s) **exactly as stated in the user query**, even if they are different from the sample values.
+#    - If user says "New York" and the column has "SF" it means in actual columns values are in abbrevation, so output "NY". Suggest based on user question and sample values.
+#    - If user says "credit card or boleto", output "credit card, boleto"
+# 5. Only include columns in the output that help **narrow down** the dataset, such as city, state, payment method etc.
+# 6. For float or integer or DATE datatype columns just give ["no"] as output.  For date kind of columns give output as ["no"]
+# 7. Output should be STRICTLY in form of list.
+
+# ⚠️ Be careful not to include aggregation or grouping columns like `customer_id`, `order_id`, or `product_id` unless they are being **explicitly** filtered in the question.
+
+# Example outputs:
+# ["yes", ["customers", "customer_city", "Campinas"], ["orders", "order_status", "delivered, shipped"]]
+# ["yes", ["order_payments", "payment_type", "credit card, boleto"]]
+# ["no"]
+#     """),
+
+#     ("human", '''
+# Given a user query and the available list of tables and column names (with sample values), decide if the SQL query to answer this question requires filters.
+
+# Only return a list in the exact format described:
+# - "yes" if filtering is needed, followed by the relevant table-column-filter entries.
+# - "no" if the question can be answered using full-table aggregates or joins without conditions. For float ot integer or date datatype columns also just give ["no"] as output.
+# - Make sure that output should be strictly in terms of list or list of lists. Make sure strings within these lists are properly closed by ".
+
+# Here is the user question:
+# {query}
+
+# And here is the list of available tables and columns (with sample values):
+# {columns}
+# ''')
+# ])
+
+
+
+# chain_filter_extractor = (
+#     RunnableMap({
+#         "columns": lambda x: x["columns"],
+#         "query": lambda x: x["query"]
+#     })
+#     | template_filter_check
+#     | model_llama
+#     | StrOutputParser()
+# )
+
+class FilterEntry(BaseModel):
+    table: str = Field(description="The name of the database table.")
+    column: str = Field(description="The name of the string column to filter on.")
+    values: str = Field(description="Filter values exactly as stated in the user question.")
+
+# Final output structure
+class SQLFilterDecision(BaseModel):
+    filter_needed: Literal["yes", "no"] = Field(
+        description="Whether a filter is needed ONLY for string datatype columns."
+    )
+    filters: Optional[List[FilterEntry]] = Field(
+        default=None,
+        description="List of filter items if filter_needed is 'yes'. Empty or null if 'no'."
+    )
+
+# Initialize prompt template
 template_filter_check = ChatPromptTemplate.from_messages([
     ("system", """
 You are an expert assistant designed to help a text-to-SQL agent determine whether filters (i.e., WHERE clauses) are required for answering a user's natural language question using a SQL query on a database.
@@ -198,52 +338,41 @@ Your job is to:
 2. Use the provided list of tables and columns (with sample values) to identify which specific string datatype **columns** would be involved in such filtering.
      
 3. Determine whether a **filter is needed** ONLY for string datatype columns:
-    - If **yes**, return a list in the format:
-      ["yes", ["<table>", "<column>", "<filter values exactly as stated in the user question>"], ["<table2>", "<column2>", "<filter values exactly as stated in the user question>"], ...]
-    - If **no filter is needed**, return: ["no"]
-4. For the third item in each filter entry, suggest value(s) **exactly as stated in the user query**, even if they are different from the sample values.
+    - Set filter_needed to "yes" if string datatype filtering is needed.
+    - Set filter_needed to "no" if no string column filtering is needed.
+4. For the filter entries, suggest value(s) **exactly as stated in the user query**, even if they are different from the sample values.
    - If user says "New York" and the column has "SF" it means in actual columns values are in abbrevation, so output "NY". Suggest based on user question and sample values.
    - If user says "credit card or boleto", output "credit card, boleto"
 5. Only include columns in the output that help **narrow down** the dataset, such as city, state, payment method etc.
-6. For float or integer or DATE datatype columns just give ["no"] as output.  For date kind of columns give output as ["no"]
-7. Output should be STRICTLY in form of list.
+6. For float or integer or DATE datatype columns set filter_needed to "no" and provide no filter objects. For date kind of columns treat them as "no".
 
-⚠️ Be careful not to include aggregation or grouping columns like `customer_id`, `order_id`, or `product_id` unless they are being **explicitly** filtered in the question.
-
-Example outputs:
-["yes", ["customers", "customer_city", "Campinas"], ["orders", "order_status", "delivered, shipped"]]
-["yes", ["order_payments", "payment_type", "credit card, boleto"]]
-["no"]
+ Be careful not to include aggregation or grouping columns like `customer_id`, `order_id`, or `product_id` unless they are being **explicitly** filtered in the question.
     """),
 
-    ("human", '''
+    ("human", """
 Given a user query and the available list of tables and column names (with sample values), decide if the SQL query to answer this question requires filters.
-
-Only return a list in the exact format described:
-- "yes" if filtering is needed, followed by the relevant table-column-filter entries.
-- "no" if the question can be answered using full-table aggregates or joins without conditions. For float ot integer or date datatype columns also just give ["no"] as output.
-- Make sure that output should be strictly in terms of list or list of lists. Make sure strings within these lists are properly closed by ".
 
 Here is the user question:
 {query}
 
 And here is the list of available tables and columns (with sample values):
 {columns}
-''')
+""")
 ])
 
+# Bind the Pydantic schema to your model instance
+structured_model_filter = model_llama.with_structured_output(SQLFilterDecision)
 
-
+# Build the LCEL functional chain
 chain_filter_extractor = (
     RunnableMap({
         "columns": lambda x: x["columns"],
         "query": lambda x: x["query"]
     })
-    | template_filter_check
-    | model_llama
-    | StrOutputParser()
-)
 
+    | template_filter_check
+    | structured_model_filter
+)
 
 ########################################## QUERY generation #################################3
 
@@ -297,15 +426,43 @@ Applicable filters:
 
 
 
+# chain_query_extractor = (
+#     RunnableMap({
+#         "columns": lambda x: x["columns"],
+#         "query": lambda x: x["query"],
+#         "filters": lambda x: x["filters"]
+#     })
+#     | template_sql_query
+#     | model_llama
+#     | StrOutputParser()
+# )
+# from langchain_core.prompts import ChatPromptTemplate
+# from langchain_core.runnables import RunnableMap
+# from pydantic import BaseModel, Field
+
+# 1. Define the desired output structure
+class SQLGenerationOutput(BaseModel):
+    thinking_process: str = Field(
+        description="Step-by-step reasoning explaining how the query was constructed."
+    )
+    sql_query: str = Field(
+        description="The final, executable, and optimized MySQL query."
+    )
+
+# 2. Bind the schema to your model
+# (Make sure model_llama supports structured output, e.g., OpenAI, Anthropic, or compatible Llama providers)
+structured_model_sql_generation = model_llama.with_structured_output(SQLGenerationOutput)
+
+# 3. Update the chain
 chain_query_extractor = (
     RunnableMap({
         "columns": lambda x: x["columns"],
         "query": lambda x: x["query"],
         "filters": lambda x: x["filters"]
     })
+
     | template_sql_query
-    | model_llama
-    | StrOutputParser()
+    | structured_model_sql_generation
 )
 
 ############################################# Validation ################
@@ -356,6 +513,24 @@ You must enforce the following rules with **strict accuracy**:
 ])
 
 
+# Define the structured schema
+class SQLValidationOutput(BaseModel):
+    is_valid: bool = Field(
+        description="True if the original SQL query was 100% correct, False otherwise."
+    )
+    explanation: str = Field(
+        description="Clear explanation of the validation findings, syntax issues, or changes made."
+    )
+    final_sql: str = Field(
+        description="The final validated SQL query. Return unchanged if valid, or provide the corrected version."
+    )
+
+
+
+# Bind the structure to your model
+structured_model_validation = model_llama.with_structured_output(SQLValidationOutput)
+
+# Build the chain
 chain_query_validator = (
     RunnableMap({
         "columns": lambda x: x["columns"],
@@ -363,7 +538,7 @@ chain_query_validator = (
         "filters": lambda x: x["filters"],
         'sql_query': lambda x: x["sql_query"],
     })
+
     | template_validation
-    | model_llama
-    | StrOutputParser()
+    | structured_model_validation
 )
