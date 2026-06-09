@@ -49,7 +49,7 @@ class CategoryEnum(StrEnum):
 # --- Schemas for Step 1: Subquestion Routing ---
 class SubQuestionRoute(BaseModel):
     sub_question: str = Field(description="A distinct sub-question extracted from the main query.")
-    assigned_table: CategoryEnum = Field(description="The exact database agent category mapping to this specific sub-question.")
+    assigned_table: str = Field(description="The exact database agent category mapping to this specific sub-question.")
 
 class MultiRouterOutput(BaseModel):
     # This field absorbs the model's natural thinking process to avoid JSON formatting breaks
@@ -82,13 +82,43 @@ template_subquestion = ChatPromptTemplate.from_messages([
         "You are an intelligent text-to-SQL query router. Deconstruct the user query into precise "
         "sub-questions. Match each sub-question with its most relevant target database domain from the provided table metadata.\n\n"
         "CRITICAL: Do not output any chat filler, introduction, markdown headers, or standalone paragraphs outside the function call tool wrapper. "
-        "Populate your thinking inside the 'thought_process' field of the schema, then instantly populate the structure."
+        "Populate your thinking inside the 'thought_process' field of the schema, then instantly populate the structure.\n\n"
+        "IMPORTANT: Use only one of these exact target categories for assigned_table: customer, orders, product. "
+        "If the model wants to assign a specific lower-level table like customers, order_payments, order_reviews, order_items, products, or category_translation, "
+        "map that assignment to the corresponding canonical category: customer, orders, or product."
     )),
     ("user", "User Query: {user_query}\n\nAvailable Tables/Metadata:\n{tables}")
 ])
 
 structured_subquestion_llm = model.with_structured_output(MultiRouterOutput)
 chain_subquestion = template_subquestion | structured_subquestion_llm
+
+TABLE_CATEGORY_MAP = {
+    "customer": "customer",
+    "customers": "customer",
+    "seller": "customer",
+    "sellers": "customer",
+    "order": "orders",
+    "orders": "orders",
+    "order_items": "orders",
+    "order_payments": "orders",
+    "order_reviews": "orders",
+    "product": "product",
+    "products": "product",
+    "category_translation": "product",
+    "product_category_name_translation": "product",
+}
+
+def normalize_assigned_table(raw_table: str) -> str | None:
+    if not isinstance(raw_table, str):
+        return None
+    key = raw_table.strip().lower()
+    if key in TABLE_CATEGORY_MAP:
+        return TABLE_CATEGORY_MAP[key]
+    if key.endswith('s') and key[:-1] in TABLE_CATEGORY_MAP:
+        return TABLE_CATEGORY_MAP[key[:-1]]
+    return None
+
 
 def solve_subquestion(q: str, lst: list) -> list:
     final = []
@@ -105,8 +135,15 @@ def solve_subquestion(q: str, lst: list) -> list:
         "tables": str(result_dict), 
         "user_query": q
     })
-    
-    return [[item.sub_question, item.assigned_table.value] for item in response_object.analysis]
+
+    normalized_output = []
+    for item in response_object.analysis:
+        canonical_table = normalize_assigned_table(item.assigned_table)
+        if canonical_table is None:
+            continue
+        normalized_output.append([item.sub_question, canonical_table])
+
+    return normalized_output
 
 # ==========================================
 # 6. COLUMN SELECTION CHAIN

@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableMap, RunnableL
 import pickle
 import re
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, TypedDict, Annotated, Literal, Optional
+from typing import List, Dict, Any, TypedDict, Annotated, Literal, Optional, Union
 from enum import StrEnum, Enum
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -495,6 +495,7 @@ You must enforce the following rules with **strict accuracy**:
 - Ensure logical soundness and alignment with the user’s intent.
 - If the provided query is fully correct, return it **unchanged**.
 - If it has issues, return a revised and correct version.
+- Return `is_valid` as a bare boolean value: `true` or `false` (not a quoted string like "True" or "False").
 
 ---
 
@@ -515,7 +516,7 @@ You must enforce the following rules with **strict accuracy**:
 
 # Define the structured schema
 class SQLValidationOutput(BaseModel):
-    is_valid: bool = Field(
+    is_valid: Union[bool, str] = Field(
         description="True if the original SQL query was 100% correct, False otherwise."
     )
     explanation: str = Field(
