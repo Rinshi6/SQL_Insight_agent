@@ -1,8 +1,5 @@
 ## SQL_Insight_agent
-
-
-
-A brief, one-sentence description of what your project or Jupyter notebook does.  
+An intelligent Text-to-SQL AI agent designed to query over 100K+ Olist e-commerce records. This system automatically translates complex business analytics questions into validated SQL queries across 5 interconnected datasets, generating 10+ distinct report types. It features automated SQL validation, query refinement, and MLflow observability to track prompts, query execution, and performance metrics. 
 ## 🚀 Getting Started
 Follow these steps to set up and run the project on your local machine.
 ## 1. Clone the Repository 
