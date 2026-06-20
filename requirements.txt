@@ -10,3 +10,6 @@ kagglehub
 sqlalchemy
 pandas
 rapidfuzz
+openpyxl
+mlflow
+psycopg2-binary
