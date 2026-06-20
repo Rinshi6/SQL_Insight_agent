@@ -37,21 +37,16 @@ By default, the app uses:
 
 ```env
 MLFLOW_TRACKING_URI=postgresql+psycopg2://postgres:postgres@localhost:5432/mlflowdb
-# Optional: set this only if you want a fixed experiment name.
-# If unset, the app creates txt2sql-agent-<uuid> each time.
 MLFLOW_EXPERIMENT_NAME=txt2sql-agent
 ```
 
 If your PostgreSQL username, password, host, or port is different, add the correct `MLFLOW_TRACKING_URI` to `.env`.
 
 ## 5. Run the Project
-Launch Jupyter Lab or Jupyter Notebook to open and execute the main pipeline.
 
-jupyter lab
-
-Once the interface opens, navigate to and run main.ipynb.
+Once the interface opens, navigate to and run main.py.
 ## 🛠️ Project Structure
 
-* main.ipynb - The primary Jupyter notebook containing the execution logic.
+* main.py - The primary file containing the execution logic.
 * requirements.txt - Python dependencies needed to run the notebook.
 * .env - Configuration file for API tokens.
